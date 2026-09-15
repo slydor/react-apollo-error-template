@@ -1,29 +1,17 @@
 import { gql, type TypedDocumentNode } from "@apollo/client";
-import { useMutation, useQuery } from "@apollo/client/react";
+import { useLazyQuery } from "@apollo/client/react";
 import { useState } from "react";
 import type {
-  AddPersonMutation,
-  AddPersonMutationVariables,
-  AllPeopleQuery,
-  AllPeopleQueryVariables,
+  SearchPersonQuery,
+  SearchPersonQueryVariables,
 } from "./types/__generated__/graphql";
 
-const ALL_PEOPLE: TypedDocumentNode<AllPeopleQuery, AllPeopleQueryVariables> =
-  gql`
-    query AllPeople {
-      people {
-        id
-        name
-      }
-    }
-  `;
-
-const ADD_PERSON: TypedDocumentNode<
-  AddPersonMutation,
-  AddPersonMutationVariables
+const SEARCH_PERSON: TypedDocumentNode<
+  SearchPersonQuery,
+  SearchPersonQueryVariables
 > = gql`
-  mutation AddPerson($name: String) {
-    addPerson(name: $name) {
+  query SearchPerson($name: String!, $delay: Int) {
+    searchPerson(name: $name, delay: $delay) {
       id
       name
     }
@@ -31,56 +19,85 @@ const ADD_PERSON: TypedDocumentNode<
 `;
 
 export function App() {
-  const [name, setName] = useState("");
-  const { loading, data } = useQuery(ALL_PEOPLE);
+  const [executeSearch, { called, loading, data, variables }] = useLazyQuery(
+    SEARCH_PERSON,
+    { fetchPolicy: "network-only" }
+  );
+  const [logs, setLogs] = useState<string[]>([]);
 
-  const [addPerson] = useMutation(ADD_PERSON, {
-    update: (cache, { data }) => {
-      const addPersonData = data?.addPerson;
-      const peopleResult = cache.readQuery({ query: ALL_PEOPLE });
+  const addLog = (msg: string) => {
+    setLogs((prev) => [...prev, `${new Date().toLocaleTimeString()}: ${msg}`]);
+  };
 
-      if (addPersonData && peopleResult) {
-        cache.writeQuery({
-          query: ALL_PEOPLE,
-          data: {
-            ...peopleResult,
-            people: [...(peopleResult.people ?? []), addPersonData],
-          },
-        });
-      }
-    },
-  });
+  const runRepro = async () => {
+    setLogs([]);
+    addLog("1. Triggering First Call (name: 'Query 1 (Slow)', delay: 1000ms)");
+
+    // Call 1
+    const p1 = executeSearch({
+      variables: { name: "Query 1 (Slow)", delay: 1000 },
+    }).catch((err: unknown) => {
+      const isAbort = err instanceof Error && err.name === "AbortError";
+      return { aborted: true, isAbort, error: err };
+    });
+
+    // Wait 50ms then Call 2
+    await new Promise((r) => setTimeout(r, 50));
+    addLog("2. Triggering Second Call (name: 'Query 2 (Fast)', delay: 100ms)");
+    const p2 = executeSearch({
+      variables: { name: "Query 2 (Fast)", delay: 100 },
+    });
+
+    const res2 = await p2;
+    addLog(`Second Call returned: ${JSON.stringify(res2.data)}`);
+
+    const res1 = await p1;
+    if ("aborted" in res1) {
+      addLog(`First Call promise was aborted as expected: ${res1.error}`);
+    } else {
+      addLog(`First Call returned: ${JSON.stringify(res1.data)}`);
+    }
+  };
 
   return (
-    <main>
-      <h3>Home</h3>
-      <div className="add-person">
-        <label htmlFor="name">Name</label>
-        <input
-          type="text"
-          name="name"
-          value={name}
-          onChange={(evt) => setName(evt.target.value)}
-        />
-        <button
-          onClick={() => {
-            addPerson({ variables: { name } });
-            setName("");
-          }}
-        >
-          Add person
-        </button>
+    <main style={{ padding: "2rem", fontFamily: "sans-serif" }}>
+      <h2>Apollo Client useLazyQuery Out-of-Order Execution Test</h2>
+      <p>
+        Testing <code>useLazyQuery</code> when called twice in succession where the
+        first query is slower than the second query.
+      </p>
+
+      <button
+        onClick={runRepro}
+        style={{ padding: "0.5rem 1rem", fontSize: "1rem" }}
+      >
+        Trigger Out-of-Order Queries
+      </button>
+
+      <div style={{ marginTop: "1rem" }}>
+        <h3>Current useLazyQuery Hook State:</h3>
+        <p>
+          <strong>called:</strong> {String(called)}
+        </p>
+        <p>
+          <strong>loading:</strong> {String(loading)}
+        </p>
+        <p>
+          <strong>variables:</strong> {JSON.stringify(variables)}
+        </p>
+        <p>
+          <strong>data:</strong> {JSON.stringify(data)}
+        </p>
       </div>
-      <h2>Names</h2>
-      {loading ? (
-        <p>Loading…</p>
-      ) : (
+
+      <div style={{ marginTop: "1rem" }}>
+        <h3>Log / Timeline:</h3>
         <ul>
-          {data?.people.map((person) => (
-            <li key={person.id}>{person.name}</li>
+          {logs.map((log, index) => (
+            <li key={index}>{log}</li>
           ))}
         </ul>
-      )}
+      </div>
     </main>
   );
 }

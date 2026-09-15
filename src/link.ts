@@ -1,13 +1,15 @@
 /*** LINK ***/
 import { graphql, print } from "graphql";
-import { ApolloLink, Observable } from "@apollo/client";
+import { ApolloLink, Observable, type FetchResult } from "@apollo/client";
 import { createClient } from "graphql-ws";
 import { GraphQLWsLink } from "@apollo/client/link/subscriptions";
 import { schema } from "./schema.js";
 import { OperationTypeNode } from "graphql";
 
-function delay(wait: number) {
-  return new Promise((resolve) => setTimeout(resolve, wait));
+interface ActiveObserver {
+  closed?: boolean;
+  next: (value: FetchResult) => void;
+  error: (err: unknown) => void;
 }
 
 function logRequest(operation: ApolloLink.Operation) {
@@ -36,34 +38,54 @@ function logResponse(
   console.groupEnd();
 }
 
+let activeObserver: ActiveObserver | null = null;
+
 const staticDataLink = new ApolloLink((operation) => {
   return new Observable((observer) => {
-    Promise.resolve().then(async () => {
-      const { query, operationName, variables } = operation;
-      const timestamp = performance.now();
+    activeObserver = observer;
+    const { query, operationName, variables } = operation;
+    const timestamp = performance.now();
 
-      logRequest(operation);
-      await delay(300);
+    logRequest(operation);
+    const delayMs = typeof variables?.delay === "number" ? variables.delay : 300;
+
+    setTimeout(async () => {
       try {
-        const result = await graphql({
-          schema,
-          source: print(query),
-          variableValues: variables,
-          operationName,
-        });
+        let result;
+        if (operationName === "SearchPerson") {
+          result = {
+            data: {
+              searchPerson: {
+                __typename: "Person",
+                id: "99",
+                name: variables?.name ?? null,
+              },
+            },
+          };
+        } else {
+          result = await graphql({
+            schema,
+            source: print(query),
+            variableValues: variables,
+            operationName,
+          });
+        }
 
         logResponse(operation, timestamp, { ok: true, result });
 
-        observer.next(result);
-        observer.complete();
+        if (activeObserver && !activeObserver.closed) {
+          activeObserver.next(result);
+        }
       } catch (err) {
         logResponse(operation, timestamp, {
           ok: false,
           error: err,
         });
-        observer.error(err);
+        if (activeObserver && !activeObserver.closed) {
+          activeObserver.error(err);
+        }
       }
-    });
+    }, delayMs);
   });
 });
 

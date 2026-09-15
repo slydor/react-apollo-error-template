@@ -6,22 +6,13 @@ export type Incremental<T> =
   | {
       [P in keyof T]?: P extends " $fragmentName" | "__typename" ? T[P] : never;
     };
-export type AllPeopleQueryVariables = Exact<{ [key: string]: never }>;
-
-export type AllPeopleQuery = {
-  people: Array<{
-    __typename: "Person";
-    id: string | null;
-    name: string | null;
-  } | null> | null;
-};
-
-export type AddPersonMutationVariables = Exact<{
-  name?: string | null | undefined;
+export type SearchPersonQueryVariables = Exact<{
+  name: string;
+  delay?: number | null | undefined;
 }>;
 
-export type AddPersonMutation = {
-  addPerson: {
+export type SearchPersonQuery = {
+  searchPerson: {
     __typename: "Person";
     id: string | null;
     name: string | null;

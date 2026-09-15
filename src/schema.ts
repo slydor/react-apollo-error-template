@@ -13,12 +13,17 @@ const resolvers: Resolvers = {
     people: () => {
       return peopleData.map((person) => ({ ...person, id: String(person.id) }));
     },
+    searchPerson: (_, { name }) => {
+      // simple echo for demo purposes
+      return { id: "99", name };
+    },
   },
   Mutation: {
     addPerson: (_, { name }) => {
+      const personName = name ?? "Unknown";
       const person = {
         id: peopleData[peopleData.length - 1].id + 1,
-        name,
+        name: personName,
       };
 
       peopleData.push(person);

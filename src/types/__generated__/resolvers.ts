@@ -1,6 +1,9 @@
 import type { GraphQLResolveInfo } from "graphql";
 export type Maybe<T> = T | null;
 export type InputMaybe<T> = Maybe<T>;
+export type RequireFields<T, K extends keyof T> = Omit<T, K> & {
+  [P in K]-?: NonNullable<T[P]>;
+};
 /** All built-in and custom scalars, mapped to their actual values */
 export type Scalars = {
   ID: { input: string; output: string };
@@ -28,6 +31,12 @@ export type Person = {
 export type Query = {
   __typename?: "Query";
   people?: Maybe<Array<Maybe<Person>>>;
+  searchPerson?: Maybe<Person>;
+};
+
+export type QuerySearchPersonArgs = {
+  delay?: InputMaybe<Scalars["Int"]["input"]>;
+  name: Scalars["String"]["input"];
 };
 
 export type Subscription = {
@@ -207,6 +216,12 @@ export type QueryResolvers<
     Maybe<Array<Maybe<ResolversTypes["Person"]>>>,
     ParentType,
     ContextType
+  >;
+  searchPerson?: Resolver<
+    Maybe<ResolversTypes["Person"]>,
+    ParentType,
+    ContextType,
+    RequireFields<QuerySearchPersonArgs, "name">
   >;
 };
 
