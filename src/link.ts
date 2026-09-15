@@ -1,16 +1,10 @@
 /*** LINK ***/
 import { graphql, print } from "graphql";
-import { ApolloLink, Observable, type FetchResult } from "@apollo/client";
+import { ApolloLink, Observable } from "@apollo/client";
 import { createClient } from "graphql-ws";
 import { GraphQLWsLink } from "@apollo/client/link/subscriptions";
 import { schema } from "./schema.js";
 import { OperationTypeNode } from "graphql";
-
-interface ActiveObserver {
-  closed?: boolean;
-  next: (value: FetchResult) => void;
-  error: (err: unknown) => void;
-}
 
 function logRequest(operation: ApolloLink.Operation) {
   console.group(operation.operationType, operation.operationName, "request:");
@@ -38,18 +32,15 @@ function logResponse(
   console.groupEnd();
 }
 
-let activeObserver: ActiveObserver | null = null;
-
 const staticDataLink = new ApolloLink((operation) => {
   return new Observable((observer) => {
-    activeObserver = observer;
     const { query, operationName, variables } = operation;
     const timestamp = performance.now();
 
     logRequest(operation);
     const delayMs = typeof variables?.delay === "number" ? variables.delay : 300;
 
-    setTimeout(async () => {
+    const timer = setTimeout(async () => {
       try {
         let result;
         if (operationName === "SearchPerson") {
@@ -73,19 +64,17 @@ const staticDataLink = new ApolloLink((operation) => {
 
         logResponse(operation, timestamp, { ok: true, result });
 
-        if (activeObserver && !activeObserver.closed) {
-          activeObserver.next(result);
-        }
+        observer.next(result);
+        observer.complete();
       } catch (err) {
         logResponse(operation, timestamp, {
           ok: false,
           error: err,
         });
-        if (activeObserver && !activeObserver.closed) {
-          activeObserver.error(err);
-        }
+        observer.error(err);
       }
     }, delayMs);
+    return () => clearTimeout(timer);
   });
 });
 
