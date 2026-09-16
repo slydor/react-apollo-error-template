@@ -1,82 +1,62 @@
-# Apollo Client `useLazyQuery` Out-of-Order Execution Reproduction
+# Apollo Client `useLazyQuery`: `variables` & `data` State Desynchronization
 
-## Overview & Explanation of the Issue
+## Overview & Technical Explanation
 
-### What is the Apollo Client `useLazyQuery` Issue?
-In **Apollo Client v4 / v3**, `useLazyQuery` provides an imperative execution function (e.g., `executeSearch({ variables: ... })`) to run queries on demand and exposes state variables such as `loading`, `data`, and `variables` via its React hook result object.
+This reproduction demonstrates a React hook state desynchronization issue in Apollo Client's `useLazyQuery` when executing queries on demand.
 
-When `useLazyQuery` is triggered rapidly in succession—such as during input typing or autocomplete—multiple network requests can be in flight simultaneously. If an **earlier (slow)** request completes after a **later (fast)** request has already resolved and updated the UI, a race condition occurs.
+### The Problem
+When invoking the imperative trigger function `executeSearch({ variables })`:
+1. **`variables` updates SYNCHRONOUSLY:** As soon as `executeSearch({ variables: { name: 'Bob' } })` is called, Apollo Client updates its returned `variables` object **immediately** on the next React render cycle.
+2. **`data` updates ASYNCHRONOUSLY:** `data` updates **asynchronously** only when the GraphQL network response resolves or is emitted from cache.
+3. **The In-Flight State Mismatch:** During the window between request trigger and response resolution, the hook result contains:
+   - `variables`: `{ name: 'Bob' }` (the *future request intent*)
+   - `data`: `undefined` or `{ name: 'Alice' }` (the *past completed result*)
+   - `loading`: `true`
 
-### Why does this happen?
-1. **Network Race Condition / Out-of-Order Responses:** Network latency varies. Request 1 (triggered first) takes 1000ms while Request 2 (triggered 50ms later) takes 100ms.
-2. **Hook State Mismatch:** When Request 2 completes first at $t \approx 150\text{ms}$, `useLazyQuery` updates its return values (`variables` and `data`) to reflect Request 2. However, when Request 1 finally resolves at $t \approx 1000\text{ms}$, if Apollo Client does not properly abort or ignore the stale in-flight observable for Request 1, the hook receives Request 1's result. This causes the UI state (`data` / `variables`) to revert back to the old, stale query result.
+### Why This Causes Bugs in UI Components
+In components like search inputs or autocompletes, developers often write guards comparing `variables` against current input state:
 
-### Ideal Expected Behavior
-When `useLazyQuery` is called with a new set of variables:
-- Any active, in-flight request triggered by a previous call to that same `useLazyQuery` hook instance should be aborted/cancelled.
-- The hook's `variables` and `data` properties must remain locked to the **latest execution call**, ignoring responses from superseded requests.
-
----
-
-## User Guide for the Repro Unit Test and App Demo
-
-### 1. Interactive Web Application Demo (`src/App.tsx`)
-
-#### How to Start the App
-Navigate to the template directory and launch the Vite dev server:
-```bash
-npm start
+```tsx
+const options = useMemo(() => {
+  // Developer guard attempting to verify if the query matches current component input:
+  if (variables?.name !== currentInput) {
+    return []; // Don't show options if query doesn't match input
+  }
+  
+  // Bug! During in-flight request:
+  // variables.name === currentInput ('Bob' === 'Bob') is TRUE,
+  // but `data` is still the result for 'Alice' (or undefined)!
+  return data?.searchPerson ? [data.searchPerson.name] : [];
+}, [data, variables, currentInput]);
 ```
-Open your browser at `http://localhost:3000`.
 
-#### What the App Demo Does
-- The app renders a test dashboard featuring a **"Trigger Out-of-Order Queries"** button.
-- Clicking the button executes two consecutive `SearchPerson` queries using `useLazyQuery`:
-  1. **Query 1 (Slow):** Variables `{ name: 'Query 1 (Slow)', delay: 1000 }` (simulating network latency of 1000ms).
-  2. **Query 2 (Fast):** Triggered 50ms later with `{ name: 'Query 2 (Fast)', delay: 100 }` (network latency of 100ms).
-- Below the button, the page displays:
-  - **Current `useLazyQuery` Hook State:** Shows real-time values for `called`, `loading`, `variables`, and `data`.
-  - **Log / Timeline:** Displays event timestamps, showing when each request started, when promises resolved, and whether the first request promise was aborted.
-
-#### Expected Outcome in the Demo
-1. At $t \approx 150\text{ms}$, **Query 2 (Fast)** finishes. The hook state updates to show `Query 2 (Fast)` in both `variables` and `data`.
-2. At $t \approx 1100\text{ms}$, **Query 1 (Slow)**'s delay expires.
-3. **Correct Behavior:** The hook state remains locked on `Query 2 (Fast)`. The log shows that the first call promise rejected with an `AbortError`.
+Because `variables` updates synchronously, the guard `variables?.name !== currentInput` evaluates to `false` (i.e. *"they match"*), causing `useMemo` to evaluate against the **old/stale `data`**.
 
 ---
 
-### 2. Programmatic Unit Tests (`src/App.test.tsx`)
+### Questions for Apollo Maintainers
+1. Is `variables` returned by `useLazyQuery` intended to represent the arguments of the **most recent call to `execute()`**, or the variables that produced the **currently rendered `data`**?
+2. If `variables` represents future call intent while `data` represents past response state, what is the recommended way for React components to know which `variables` produced the current `data`?
 
-#### How to Run the Unit Tests
-Run the Vitest suite in the repository:
+---
+
+## Reproduction Tests & Setup
+
+This reproduction uses standard Apollo Client testing infrastructure (`MockedProvider` from `@apollo/client/testing/react`).
+
+### Running the Tests
 ```bash
 npm test
 ```
 
-#### How the Reproduction Unit Tests Work
-The test suite in `src/App.test.tsx` contains 3 deterministic tests asserting **expected behavior** (expecting the latest triggered execution result to be preserved):
+### Test Suite (`src/App.test.tsx`)
+1. **Test 1 (`Synchronous variables vs asynchronous data`):** Verifies that calling `executeSearch({ variables })` synchronously changes `variables` in hook state while `data` remains `undefined` or holds previous data during the in-flight period.
+2. **Test 2 (`Derived state / useMemo computation`):** Demonstrates how checking `variables?.name === currentInput` passes synchronously while `data` is still pending/stale.
+3. **Test 3 (`App Component Integration`):** Renders `<App />` with `MockedProvider` to demonstrate in-flight state desynchronization in a React component.
 
-1. **Test 1 (`useEffect` sync):** Component syncs `useLazyQuery`'s `data` into local React state. Triggers Query 1 (Slow, 1000ms) then Query 2 (Fast, 100ms). Asserting that local state strictly remains locked on `"Query 2 (Fast)"`.
-2. **Test 2 (Rapid execution loop):** Triggers 3 consecutive queries in rapid succession with decreasing network delays (1000ms, 500ms, 100ms). Asserting that final `variables` and `data` remain `"Query 3 (Fast)"`.
-3. **Test 3 (Original App component):** Renders `<App />`, triggers out-of-order queries, waits for Query 2 to arrive, then waits past Query 1's delay (1100ms) and asserts that the DOM still displays `"Query 2 (Fast)"`.
-
-#### Expected Unit Test Results (Bug Reproduction)
-Because Apollo Client delivers out-of-order responses landing late, **all 3 unit tests currently fail deterministically**, asserting `Query 2 (Fast)` / `Query 3 (Fast)` but receiving `Query 1 (Slow)`. This provides programmatic proof of the bug.
-
----
-
-## Available Scripts
-
+### Building & Verification
 ```bash
-# Generate GraphQL Types
-npm run codegen
-
-# Run Vitest test suite
-npm test
-
-# Run ESLint check
 npm run lint
-
-# Build production bundle
 npm run build
+npm test
 ```
